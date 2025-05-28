@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Multimodal Emotion Detection</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      color: white;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.1);
+      padding: 30px;
+      border-radius: 20px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 30px;
+      font-size: 2.5em;
+      text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+    }
+    .controls {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    button {
+      background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+      border: none;
+      color: white;
+      padding: 15px 30px;
+      margin: 0 10px;
+      border-radius: 25px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: bold;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    }
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+    }
+    button:disabled {
+      background: #95a5a6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .video-container {
+      display: flex;
+      gap: 30px;
+      margin-bottom: 30px;
+      flex-wrap: wrap;
+    }
+    .video-section {
+      flex: 1;
+      min-width: 300px;
+    }
+    video {
+      width: 100%;
+      max-width: 400px;
+      border-radius: 15px;
+      box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+    }
+    .emotions-display {
+      display: flex;
+      gap: 30px;
+      margin-bottom: 30px;
+      flex-wrap: wrap;
+    }
+    .emotion-panel {
+      flex: 1;
+      min-width: 300px;
+      background: rgba(255, 255, 255, 0.1);
+      padding: 20px;
+      border-radius: 15px;
+      backdrop-filter: blur(5px);
+    }
+    .emotion-panel h3 {
+      margin-top: 0;
+      color: #fff;
+      text-align: center;
+      font-size: 1.3em;
+    }
+    .emotion-bar {
+      margin-bottom: 10px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .emotion-bar-fill {
+      height: 25px;
+      background: linear-gradient(45deg, #4ecdc4, #44a08d);
+      transition: width 0.15s ease;
+      display: flex;
+      align-items: center;
+      padding-left: 10px;
+      color: white;
+      font-weight: bold;
+      font-size: 12px;
+    }
+    .status {
+      text-align: center;
+      padding: 15px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 10px;
+      margin: 20px 0;
+    }
+    .summary {
+      background: rgba(255, 255, 255, 0.15);
+      padding: 30px;
+      border-radius: 15px;
+      margin-top: 30px;
+      backdrop-filter: blur(10px);
+    }
+    .summary h2 {
+      text-align: center;
+      margin-bottom: 30px;
+      color: #fff;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 30px;
+    }
+    .summary-section {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 20px;
+      border-radius: 10px;
+    }
+    .summary-section h3 {
+      text-align: center;
+      margin-bottom: 15px;
+      color: #fff;
+    }
+    .summary-item {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      padding: 5px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .hidden {
+      display: none;
+    }
+    @media (max-width: 768px) {
+      .summary-grid {
+        grid-template-columns: 1fr;
+      }
+      .video-container,
+      .emotions-display {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎭 Multimodal Emotion Detection</h1>
+
+    <div class="controls">
+      <button id="startBtn">Start Detection</button>
+      <button id="stopBtn" disabled>Stop Detection</button>
+    </div>
+
+    <div class="status" id="status">
+      Click "Start Detection" to begin analyzing emotions from camera and microphone
+    </div>
+
+    <div class="video-container">
+      <div class="video-section">
+        <video id="video" autoplay muted playsinline></video>
+      </div>
+    </div>
+
+    <div class="emotions-display">
+      <div class="emotion-panel">
+        <h3>😊 Facial Emotions (Real-time)</h3>
+        <div id="faceEmotions"></div>
+      </div>
+      <div class="emotion-panel">
+        <h3>🎤 Voice Emotions (Real-time)</h3>
+        <div id="voiceEmotions"></div>
+      </div>
+    </div>
+
+    <div class="summary hidden" id="summary">
+      <h2>📊 Final Emotion Summary</h2>
+      <div class="summary-grid">
+        <div class="summary-section">
+          <h3>Facial Analysis</h3>
+          <div id="faceSummary"></div>
+        </div>
+        <div class="summary-section">
+          <h3>Voice Analysis</h3>
+          <div id="voiceSummary"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const status = document.getElementById('status');
+    const faceEmotions = document.getElementById('faceEmotions');
+    const voiceEmotions = document.getElementById('voiceEmotions');
+    const summary = document.getElementById('summary');
+    const faceSummary = document.getElementById('faceSummary');
+    const voiceSummary = document.getElementById('voiceSummary');
+
+    let ws = null;
+    let stream = null;
+    let audioContext = null;
+    let scriptNode = null;
+
+    const emotions = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral'];
+
+    function initEmotionDisplays() {
+      emotions.forEach(emotion => {
+        const faceBar = document.createElement('div');
+        faceBar.className = 'emotion-bar';
+        faceBar.innerHTML = `<div class="emotion-bar-fill" id="face-${emotion}" style="width: 0%">${emotion}: 0%</div>`;
+        faceEmotions.appendChild(faceBar);
+
+        const voiceBar = document.createElement('div');
+        voiceBar.className = 'emotion-bar';
+        voiceBar.innerHTML = `<div class="emotion-bar-fill" id="voice-${emotion}" style="width: 0%">${emotion}: 0%</div>`;
+        voiceEmotions.appendChild(voiceBar);
+      });
+    }
+
+    function updateEmotionDisplay(type, emotionScores) {
+      let totalScore = 0;
+      emotions.forEach(e => totalScore += (emotionScores[e] || 0));
+      emotions.forEach(emotion => {
+        let score = emotionScores[emotion] || 0;
+        if (totalScore > 0) {
+          score = (score / totalScore) * 100;
+        } else {
+          score = (1 / emotions.length) * 100;
+        }
+        const element = document.getElementById(`${type}-${emotion}`);
+        if (element) {
+          element.style.width = `${score.toFixed(1)}%`;
+          element.textContent = `${emotion}: ${score.toFixed(1)}%`;
+        }
+      });
+    }
+
+    function connectWebSocket() {
+      ws = new WebSocket(`ws://${window.location.host}/ws`);
+      ws.onopen = () => console.log('WebSocket connected');
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        switch(data.type) {
+          case 'session_started':
+            status.textContent = 'Recording started - analyzing emotions...';
+            break;
+          case 'face_emotion':
+            updateEmotionDisplay('face', data.emotions);
+            break;
+          case 'voice_emotion':
+            updateEmotionDisplay('voice', data.emotions);
+            break;
+          case 'final_summary':
+            showFinalSummary(data);
+            break;
+        }
+      };
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        status.textContent = 'Connection error. Please refresh the page.';
+      };
+    }
+
+    function showFinalSummary(data) {
+      faceSummary.innerHTML = '';
+      voiceSummary.innerHTML = '';
+      Object.entries(data.face_emotions).forEach(([emotion, percentage]) => {
+        const item = document.createElement('div');
+        item.className = 'summary-item';
+        item.innerHTML = `<span>${emotion}:</span><span>${percentage.toFixed(1)}%</span>`;
+        faceSummary.appendChild(item);
+      });
+      Object.entries(data.voice_emotions).forEach(([emotion, percentage]) => {
+        const item = document.createElement('div');
+        item.className = 'summary-item';
+        item.innerHTML = `<span>${emotion}:</span><span>${percentage.toFixed(1)}%</span>`;
+        voiceSummary.appendChild(item);
+      });
+      summary.classList.remove('hidden');
+      status.textContent = 'Analysis complete! Check the summary below.';
+    }
+
+    async function startDetection() {
+      try {
+        // Get media stream
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480 },
+          audio: true
+        });
+
+        video.srcObject = stream;
+
+        // Set up Web Audio API
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(stream);
+        scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+
+        scriptNode.onaudioprocess = function(e) {
+          const inputBuffer = e.inputBuffer;
+          const inputData = inputBuffer.getChannelData(0); // mono
+          const buffer = new Int16Array(inputData.length);
+          for (let i = 0; i < buffer.length; i++) {
+            buffer[i] = Math.floor(Math.min(1, Math.max(-1, inputData[i])) * 32767);
+          }
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'audio_chunk',
+              data: btoa(String.fromCharCode.apply(null, new Uint8Array(buffer.buffer)))
+            }));
+          }
+        };
+
+        source.connect(scriptNode);
+        scriptNode.connect(audioContext.destination);
+
+        processVideo();
+        connectWebSocket();
+
+        setTimeout(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'start_session' }));
+          }
+        }, 1000);
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        summary.classList.add('hidden');
+
+      } catch (error) {
+        console.error('Error starting detection:', error);
+        status.textContent = 'Error accessing camera/microphone. Please grant permissions.';
+      }
+    }
+
+    function processVideo() {
+      if (!stream) return;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      const imageData = canvas.toDataURL('image/jpeg', 0.8);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'video_frame', data: imageData }));
+      }
+      setTimeout(processVideo, 200);
+    }
+
+    function stopDetection() {
+      if (scriptNode) {
+        scriptNode.disconnect();
+        scriptNode = null;
+      }
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'stop_session' }));
+      }
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      status.textContent = 'Processing final results...';
+    }
+
+    // Event listeners
+    startBtn.addEventListener('click', startDetection);
+    stopBtn.addEventListener('click', stopDetection);
+
+    // Initialize
+    initEmotionDisplays();
+  </script>
+</body>
+</html>
