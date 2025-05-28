@@ -217,6 +217,8 @@
     let stream = null;
     let audioContext = null;
     let scriptNode = null;
+    let sessionActive = false; // Added to track session state
+    let animationFrameId = null; // For tracking video processing
 
     const emotions = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral'];
 
@@ -238,13 +240,11 @@
 
     function updateEmotionDisplay(type, emotionScores) {
       let totalScore = Object.values(emotionScores).reduce((sum, val) => sum + val, 0);
+      if (totalScore <= 0) totalScore = 1; // Prevent division by zero
+
       emotions.forEach(emotion => {
         let score = emotionScores[emotion] || 0;
-        if (totalScore > 0) {
-          score = (score / totalScore) * 100;
-        } else {
-          score = (1 / emotions.length) * 100; // fallback
-        }
+        score = (score / totalScore) * 100;
         const element = document.getElementById(`${type}-${emotion}`);
         if (element) {
           element.style.width = `${score.toFixed(1)}%`;
@@ -254,32 +254,54 @@
     }
 
     function connectWebSocket() {
-      // 🔥 Use secure WebSocket (wss://)
-      ws = new WebSocket(`wss://${window.location.host}/ws`);
+      // Use secure WebSocket (wss://) - make sure your server supports this
+      const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+      ws = new WebSocket(`${protocol}${window.location.host}/ws`);
 
-      ws.onopen = () => console.log('WebSocket connected');
-      
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+        if (sessionActive) {
+          ws.send(JSON.stringify({ type: 'start_session' }));
+        status.textContent = 'Recording started - analyzing emotions...';
+        processVideo(); // Start video processing after connection
+        }
+      };
+
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        switch(data.type) {
-          case 'session_started':
-            status.textContent = 'Recording started - analyzing emotions...';
-            break;
-          case 'face_emotion':
-            updateEmotionDisplay('face', data.emotions);
-            break;
-          case 'voice_emotion':
-            updateEmotionDisplay('voice', data.emotions);
-            break;
-          case 'final_summary':
-            showFinalSummary(data);
-            break;
+        try {
+          const data = JSON.parse(event.data);
+          switch(data.type) {
+            case 'session_started':
+              status.textContent = 'Recording started - analyzing emotions...';
+              break;
+            case 'face_emotion':
+              updateEmotionDisplay('face', data.emotions);
+              break;
+            case 'voice_emotion':
+              updateEmotionDisplay('voice', data.emotions);
+              break;
+            case 'final_summary':
+              showFinalSummary(data);
+              stopDetection(); // Clean up after final summary
+              break;
+          }
+        } catch (e) {
+          console.error('Error processing WebSocket message:', e);
         }
       };
 
       ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         status.textContent = 'Connection error. Please refresh the page.';
+        stopDetection();
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        if (sessionActive) {
+          status.textContent = 'Connection lost. Please try again.';
+          stopDetection();
+        }
       };
     }
 
@@ -287,19 +309,23 @@
       faceSummary.innerHTML = '';
       voiceSummary.innerHTML = '';
 
-      Object.entries(data.face_emotions).forEach(([emotion, percentage]) => {
-        const item = document.createElement('div');
-        item.className = 'summary-item';
-        item.innerHTML = `<span>${emotion}:</span><span>${percentage.toFixed(1)}%</span>`;
-        faceSummary.appendChild(item);
-      });
+      if (data.face_emotions) {
+        Object.entries(data.face_emotions).forEach(([emotion, percentage]) => {
+          const item = document.createElement('div');
+          item.className = 'summary-item';
+          item.innerHTML = `<span>${emotion}:</span><span>${percentage.toFixed(1)}%</span>`;
+          faceSummary.appendChild(item);
+        });
+      }
 
-      Object.entries(data.voice_emotions).forEach(([emotion, percentage]) => {
-        const item = document.createElement('div');
-        item.className = 'summary-item';
-        item.innerHTML = `<span>${emotion}:</span><span>${percentage.toFixed(1)}%</span>`;
-        voiceSummary.appendChild(item);
-      });
+      if (data.voice_emotions) {
+        Object.entries(data.voice_emotions).forEach(([emotion, percentage]) => {
+          const item = document.createElement('div');
+          item.className = 'summary-item';
+          item.innerHTML = `<span>${emotion}:</span><span>${percentage.toFixed(1)}%</span>`;
+          voiceSummary.appendChild(item);
+        });
+      }
 
       summary.classList.remove('hidden');
       status.textContent = 'Analysis complete! Check the summary below.';
@@ -307,44 +333,29 @@
 
     async function startDetection() {
       try {
+        status.textContent = 'Requesting camera and microphone access...';
+
         // Get media stream
         stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480 },
-          audio: true
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            sampleRate: 16000
+          }
         });
+
         video.srcObject = stream;
+        sessionActive = true;
 
-        // Set up Web Audio API
+        // Set up Web Audio API (modern approach)
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-        const source = audioContext.createMediaStreamSource(stream);
-        scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
-        
-        scriptNode.onaudioprocess = function(e) {
-          const inputBuffer = e.inputBuffer;
-          const inputData = inputBuffer.getChannelData(0); // mono
-          const buffer = new Int16Array(inputData.length);
-          for (let i = 0; i < buffer.length; i++) {
-            buffer[i] = Math.floor(Math.min(1, Math.max(-1, inputData[i])) * 32767);
-          }
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              type: 'audio_chunk',
-              data: btoa(String.fromCharCode.apply(null, new Uint8Array(buffer.buffer)))
-            }));
-          }
-        };
+        await audioContext.audioWorklet.addModule('audio-processor.js').catch(e => {
+          console.warn('AudioWorklet not available, falling back to ScriptProcessor:', e);
+          setupScriptProcessor();
+        });
 
-        source.connect(scriptNode);
-        scriptNode.connect(audioContext.destination);
-
-        processVideo();
         connectWebSocket();
-
-        setTimeout(() => {
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'start_session' }));
-          }
-        }, 1000);
 
         startBtn.disabled = true;
         stopBtn.disabled = false;
@@ -352,53 +363,105 @@
       } catch (error) {
         console.error('Error starting detection:', error);
         status.textContent = 'Error accessing camera/microphone. Please grant permissions.';
+        stopDetection();
       }
     }
 
+    function setupScriptProcessor() {
+      const source = audioContext.createMediaStreamSource(stream);
+      scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+
+      scriptNode.onaudioprocess = function(e) {
+        if (!sessionActive) return;
+
+        const inputBuffer = e.inputBuffer;
+        const inputData = inputBuffer.getChannelData(0); // mono
+        const buffer = new Int16Array(inputData.length);
+
+        for (let i = 0; i < buffer.length; i++) {
+          buffer[i] = Math.min(32767, Math.max(-32768, inputData[i] * 32768));
+        }
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'audio_chunk',
+            data: Array.from(buffer) // More reliable than btoa approach
+          }));
+        }
+      };
+
+      source.connect(scriptNode);
+      scriptNode.connect(audioContext.destination);
+    }
+
     function processVideo() {
-      if (!stream) return;
+      if (!sessionActive) {
+        cancelAnimationFrame(animationFrameId);
+        return;
+      }
+
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       ctx.drawImage(video, 0, 0);
-      const imageData = canvas.toDataURL('image/jpeg', 0.8);
+
+      // Only send if WebSocket is connected
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'video_frame', data: imageData }));
+        canvas.toBlob(blob => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            ws.send(JSON.stringify({
+              type: 'video_frame',
+              data: reader.result.split(',')[1] // Send base64 without prefix
+            }));
+          };
+          reader.readAsDataURL(blob);
+        }, 'image/jpeg', 0.7);
       }
-      if (manager.session_active[id(websocket)]) {
-        setTimeout(processVideo, 200);
-      }
+
+      animationFrameId = requestAnimationFrame(processVideo);
     }
 
     function stopDetection() {
+      sessionActive = false;
+
+      // Clean up video processing
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
+
+      // Clean up audio
       if (scriptNode) {
         scriptNode.disconnect();
         scriptNode = null;
       }
-      if (audioContext) {
+
+      if (audioContext && audioContext.state !== 'closed') {
         audioContext.close();
         audioContext = null;
       }
+
+      // Clean up media stream
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
         stream = null;
+        video.srcObject = null;
       }
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'stop_session' }));
+
+      // Clean up WebSocket
+      if (ws) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'stop_session' }));
+          ws.close();
+        }
+        ws = null;
       }
+
       startBtn.disabled = false;
       stopBtn.disabled = true;
-      status.textContent = 'Processing final results...';
     }
-
-    function id(obj) {
-      return obj ? obj.hashCode : null;
-    }
-
-    Object.prototype.hashCode = function(){
-      return Math.abs(this).toString(36).substring(2, 15);
-    };
 
     // Event listeners
     startBtn.addEventListener('click', startDetection);
