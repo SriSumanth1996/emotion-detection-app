@@ -1,1 +1,1 @@
-web: python emotions_detection.py
+web: python main.py
