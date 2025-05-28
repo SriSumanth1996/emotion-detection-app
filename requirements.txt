@@ -6,6 +6,7 @@ numpy>=1.21.2,<1.26.0
 soundfile>=0.10.3,<0.12.0
 librosa>=0.8.1,<0.10.0
 torch>=1.9.0,<2.0.0
-torchaudio>=0.9.0,<2.0.0
+# Remove this line:
+# torchaudio>=0.9.0,<2.0.0
 transformers>=4.11.0,<4.12.0
 wave
