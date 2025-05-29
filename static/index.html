@@ -253,7 +253,9 @@
 
     function connectWebSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-      ws = new WebSocket(`${protocol}${window.location.host}/ws`);
+      const isRender = window.location.host.includes('onrender.com');
+      const wsHost = isRender ? window.location.host : `${window.location.hostname}:${window.location.port || (window.location.protocol === 'https:' ? 443 : 80)}`;
+      ws = new WebSocket(`${protocol}${wsHost}/ws`);
 
       ws.onopen = () => {
         console.log('WebSocket connected');
@@ -329,6 +331,11 @@
     }
 
     async function startDetection() {
+      if (window.location.host.includes('onrender.com') && window.location.protocol !== 'https:') {
+        window.location.href = window.location.href.replace('http:', 'https:');
+        return;
+      }
+
       if (window.location.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
         status.textContent = 'Camera/mic access requires HTTPS. Please use HTTPS URL.';
         return;
@@ -355,7 +362,7 @@
         sessionActive = true;
 
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-        await audioContext.audioWorklet.addModule('audio-processor.js').catch(e => {
+        await audioContext.audioWorklet.addModule('/static/audio-processor.js').catch(e => {
           console.warn('AudioWorklet not available, falling back to ScriptProcessor:', e);
           setupScriptProcessor();
         });
@@ -367,7 +374,7 @@
         summary.classList.add('hidden');
       } catch (error) {
         console.error('Error starting detection:', error);
-        status.textContent = 'Error accessing camera/microphone. Please grant permissions.';
+        status.textContent = `Error: ${error.message}`;
         stopDetection();
       }
     }
