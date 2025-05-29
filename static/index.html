@@ -431,7 +431,7 @@
 
     function setupScriptProcessor() {
       const source = audioContext.createMediaStreamSource(stream);
-      scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+      scriptNode = audioContext.createScriptProcessor(8192, 1, 1);
 
       scriptNode.onaudioprocess = function(e) {
         if (!sessionActive) return;
