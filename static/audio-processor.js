@@ -1,4 +1,3 @@
-# cook your dish here
 // static/audio-processor.js
 class AudioProcessor extends AudioWorkletProcessor {
   process(inputs) {
