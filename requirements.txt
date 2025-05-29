@@ -8,3 +8,4 @@ librosa
 torch
 transformers
 wave
+websockets
