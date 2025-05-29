@@ -24,6 +24,16 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s: %(message)s',
+    handlers=[
+        logging.StreamHandler()  # Outputs to Render logs
+    ]
+)
+logger = logging.getLogger(__name__)
+
 app = FastAPI()
 
 # Mount static files
@@ -62,33 +72,39 @@ face_emotion_pipe = None
 voice_emotion_pipe = None
 face_cascade = None
 
-print("Loading models...")
-try:
-    face_emotion_pipe = pipeline(
-        "image-classification",
-        model="dima806/facial_emotions_image_detection",
-        device=-1
-    )
-    print("Face emotion model loaded")
-except Exception as e:
-    print(f"Error loading face emotion model: {e}")
+def load_models():
+    global face_emotion_pipe, voice_emotion_pipe, face_cascade
+    if face_emotion_pipe is None:
+        logger.info("Loading face emotion model...")
+        try:
+            face_emotion_pipe = pipeline(
+                "image-classification",
+                model="dima806/facial_emotions_image_detection",
+                device=-1
+            )
+            logger.info("Face emotion model loaded")
+        except Exception as e:
+            logger.error(f"Error loading face emotion model: {e}")
 
-try:
-    # Using the wav2vec2 model from the Tkinter app
-    voice_emotion_pipe = pipeline(
-        "audio-classification",
-        model="ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition",
-        device=-1
-    )
-    print("Voice emotion model loaded")
-except Exception as e:
-    print(f"Error loading voice emotion model: {e}")
+    if voice_emotion_pipe is None:
+        logger.info("Loading voice emotion model...")
+        try:
+            voice_emotion_pipe = pipeline(
+                "audio-classification",
+                model="ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition",
+                device=-1
+            )
+            logger.info("Voice emotion model loaded")
+        except Exception as e:
+            logger.error(f"Error loading voice emotion model: {e}")
 
-try:
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-    print("Face cascade loaded")
-except Exception as e:
-    print(f"Error loading face cascade: {e}")
+    if face_cascade is None:
+        logger.info("Loading face cascade...")
+        try:
+            face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+            logger.info("Face cascade loaded")
+        except Exception as e:
+            logger.error(f"Error loading face cascade: {e}")
 
 # Connection manager
 class ConnectionManager:
@@ -110,7 +126,7 @@ class ConnectionManager:
         }
         self.session_active[connection_id] = False
         self.audio_buffers[connection_id] = []
-        print(f"Client connected: {connection_id}")
+        logger.info(f"Client connected: {connection_id}")
 
     def disconnect(self, websocket: WebSocket):
         connection_id = id(websocket)
@@ -120,7 +136,7 @@ class ConnectionManager:
         for dict_obj in [self.emotion_buffers, self.emotion_counters, self.session_active, self.audio_buffers]:
             if connection_id in dict_obj:
                 del dict_obj[connection_id]
-        print(f"Client disconnected: {connection_id}")
+        logger.info(f"Client disconnected: {connection_id}")
 
     def start_session(self, connection_id):
         self.session_active[connection_id] = True
@@ -191,7 +207,7 @@ def analyze_face_emotion(image_data):
             return {'success': True, 'emotions': {}, 'face_detected': False}
 
     except Exception as e:
-        print(f"Face analysis error: {e}")
+        logger.error(f"Face analysis error: {e}")
         traceback.print_exc()
         return {'success': False, 'error': str(e)}
 
@@ -205,7 +221,7 @@ def save_audio_chunk_as_wav(audio_data, filename):
             wav_file.writeframes(audio_data.tobytes())
         return True
     except Exception as e:
-        print(f"Error saving WAV file: {e}")
+        logger.error(f"Error saving WAV file: {e}")
         return False
 
 def analyze_voice_emotion_from_chunks(connection_id):
@@ -225,7 +241,7 @@ def analyze_voice_emotion_from_chunks(connection_id):
 
     # Skip if volume is too low
     if np.abs(full_audio).mean() < 0.01:
-        print("Audio too quiet, skipping voice analysis")
+        logger.info("Audio too quiet, skipping voice analysis")
         return {'success': True, 'emotions': {'neutral': 1.0}, 'silent': True}
 
     # Resample if needed
@@ -267,6 +283,7 @@ def smooth_emotions(connection_id, new_scores):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    load_models()  # Load models on first connection
     await manager.connect(websocket)
     connection_id = id(websocket)
 
@@ -275,6 +292,12 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 data = await websocket.receive_text()
                 message = json.loads(data)
+                logger.debug(f"Received message: {message['type']} from {connection_id}")
+
+                if message['type'] == 'ping':
+                    # Respond with pong
+                    await websocket.send_text(json.dumps({'type': 'pong'}))
+                    continue
 
                 if message['type'] == 'start_session':
                     manager.start_session(connection_id)
@@ -282,7 +305,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         'type': 'session_started',
                         'message': 'Recording started'
                     }))
-                    print(f"Session started for {connection_id}")
+                    logger.info(f"Session started for {connection_id}")
 
                 elif message['type'] == 'stop_session':
                     manager.stop_session(connection_id)
@@ -315,7 +338,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         'face_emotions': face_percentages,
                         'voice_emotions': voice_percentages
                     }))
-                    print(f"Session stopped for {connection_id}")
+                    logger.info(f"Session stopped for {connection_id}")
 
                 elif message['type'] == 'video_frame' and manager.session_active.get(connection_id, False):
                     # Process video frame
@@ -348,7 +371,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Store chunk for later analysis
                         manager.audio_buffers[connection_id].append(audio_array)
 
-                        print(f"Audio chunk received: {len(audio_array)} samples")
+                        logger.debug(f"Audio chunk received: {len(audio_array)} samples")
 
                         # Analyze every few chunks
                         if len(manager.audio_buffers[connection_id]) >= 1:
@@ -371,19 +394,20 @@ async def websocket_endpoint(websocket: WebSocket):
                                 manager.audio_buffers[connection_id] = manager.audio_buffers[connection_id][-1:]
 
                     except Exception as e:
-                        print(f"Error processing audio chunk: {e}")
+                        logger.error(f"Error processing audio chunk: {e}")
                         traceback.print_exc()
 
             except json.JSONDecodeError:
+                logger.error(f"Invalid JSON from {connection_id}")
                 await websocket.send_text(json.dumps({"error": "Invalid JSON"}))
             except Exception as e:
-                print(f"Message handling error: {e}")
+                logger.error(f"Message handling error for {connection_id}: {e}", exc_info=True)
                 await websocket.send_text(json.dumps({"error": str(e)}))
 
-    except WebSocketDisconnect:
-        print(f"Client disconnected normally: {connection_id}")
+    except WebSocketDisconnect as e:
+        logger.info(f"Client disconnected normally: {connection_id}, code: {e.code}, reason: {e.reason}")
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error for {connection_id}: {e}", exc_info=True)
     finally:
         manager.disconnect(websocket)
 
@@ -412,5 +436,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"Starting server on http://localhost:{port}")
+    logger.info(f"Starting server on http://localhost:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
