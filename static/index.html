@@ -220,7 +220,10 @@
     let sessionActive = false;
     let animationFrameId = null;
     let reconnectAttempts = 0;
+    let pingInterval;
     const maxReconnectAttempts = 5;
+    const frameInterval = 200; // Process one frame every 200ms (5 FPS)
+    let lastFrameTime = 0;
 
     const emotions = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral'];
 
@@ -258,7 +261,6 @@
       console.log('Connecting to:', wsUrl);
 
       ws = new WebSocket(wsUrl);
-      let pingInterval;
 
       ws.onopen = () => {
         reconnectAttempts = 0;
@@ -267,16 +269,19 @@
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({type: 'ping'}));
           }
-        }, 30000);
+        }, 15000); // Changed ping interval to 15 seconds
       };
 
       ws.onclose = (event) => {
         clearInterval(pingInterval);
         if (sessionActive && reconnectAttempts < maxReconnectAttempts) {
-          const delay = Math.min(5000, 1000 * (reconnectAttempts + 1));
-          console.log(`Reconnecting in ${delay}ms...`);
+          const delay = Math.min(10000, 1000 * Math.pow(2, reconnectAttempts)); // Exponential backoff
+          console.log(`Reconnecting in ${delay}ms... Attempt ${reconnectAttempts + 1}/${maxReconnectAttempts}`);
           setTimeout(connectWebSocket, delay);
           reconnectAttempts++;
+        } else if (reconnectAttempts >= maxReconnectAttempts) {
+          status.textContent = 'Max reconnection attempts reached. Please refresh the page.';
+          stopDetection();
         }
       };
 
@@ -284,6 +289,9 @@
         try {
           const data = JSON.parse(event.data);
           switch(data.type) {
+            case 'pong':
+              console.log('Received pong from server');
+              break;
             case 'session_started':
               status.textContent = 'Recording started - analyzing emotions...';
               break;
@@ -375,6 +383,7 @@
         }
 
         connectWebSocket();
+        processVideo();
 
         startBtn.disabled = true;
         stopBtn.disabled = false;
@@ -452,6 +461,14 @@
         return;
       }
 
+      const now = performance.now();
+      if (now - lastFrameTime < frameInterval) {
+        animationFrameId = requestAnimationFrame(processVideo);
+        return;
+      }
+
+      lastFrameTime = now;
+
       if (video.readyState >= 2) {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
@@ -520,6 +537,13 @@
 
     startBtn.addEventListener('click', startDetection);
     stopBtn.addEventListener('click', stopDetection);
+
+    window.addEventListener('beforeunload', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'stop_session' }));
+        ws.close();
+      }
+    });
 
     initEmotionDisplays();
 
