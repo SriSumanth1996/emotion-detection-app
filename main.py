@@ -28,6 +28,9 @@ logging.getLogger("transformers").setLevel(logging.ERROR)
 
 app = FastAPI()
 
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # Get port from environment variable or default to 8000
 port = int(os.environ.get("PORT", 8000))
 
