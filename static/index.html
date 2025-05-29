@@ -219,6 +219,8 @@
     let scriptNode = null;
     let sessionActive = false;
     let animationFrameId = null;
+    let connectionAttempts = 0;
+    const maxConnectionAttempts = 3;
 
     const emotions = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral'];
 
@@ -252,13 +254,19 @@
     }
 
     function connectWebSocket() {
-      const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-      const isRender = window.location.host.includes('onrender.com');
-      const wsHost = isRender ? window.location.host : `${window.location.hostname}:${window.location.port || (window.location.protocol === 'https:' ? 443 : 80)}`;
-      ws = new WebSocket(`${protocol}${wsHost}/ws`);
+      // For Render deployment, always use wss:// for secure WebSocket connections
+      const isLocalhost = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+      const protocol = isLocalhost && window.location.protocol === 'http:' ? 'ws://' : 'wss://';
+      const wsUrl = `${protocol}${window.location.host}/ws`;
+      
+      console.log('Attempting WebSocket connection to:', wsUrl);
+      connectionAttempts++;
+      
+      ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
+        console.log('WebSocket connected successfully');
+        connectionAttempts = 0; // Reset on successful connection
         if (sessionActive) {
           ws.send(JSON.stringify({ type: 'start_session' }));
           status.textContent = 'Recording started - analyzing emotions...';
@@ -291,13 +299,25 @@
 
       ws.onerror = (error) => {
         console.error('WebSocket error:', error);
-        status.textContent = 'Connection error. Please refresh the page.';
-        stopDetection();
+        status.textContent = `Connection error (attempt ${connectionAttempts}/${maxConnectionAttempts}). ${connectionAttempts < maxConnectionAttempts ? 'Retrying...' : 'Please refresh the page.'}`;
+        
+        if (connectionAttempts < maxConnectionAttempts && sessionActive) {
+          setTimeout(() => {
+            connectWebSocket();
+          }, 2000); // Retry after 2 seconds
+        } else {
+          stopDetection();
+        }
       };
 
-      ws.onclose = () => {
-        console.log('WebSocket disconnected');
-        if (sessionActive) {
+      ws.onclose = (event) => {
+        console.log('WebSocket disconnected:', event.code, event.reason);
+        if (sessionActive && connectionAttempts < maxConnectionAttempts) {
+          status.textContent = `Connection lost (attempt ${connectionAttempts}/${maxConnectionAttempts}). Reconnecting...`;
+          setTimeout(() => {
+            connectWebSocket();
+          }, 2000);
+        } else if (sessionActive) {
           status.textContent = 'Connection lost. Please try again.';
           stopDetection();
         }
@@ -331,12 +351,11 @@
     }
 
     async function startDetection() {
-      if (window.location.host.includes('onrender.com') && window.location.protocol !== 'https:') {
-        window.location.href = window.location.href.replace('http:', 'https:');
-        return;
-      }
-
-      if (window.location.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+      // More permissive HTTPS check for deployment
+      const isSecure = window.location.protocol === 'https:' || 
+                       ['localhost', '127.0.0.1'].includes(window.location.hostname);
+      
+      if (!isSecure) {
         status.textContent = 'Camera/mic access requires HTTPS. Please use HTTPS URL.';
         return;
       }
@@ -360,12 +379,19 @@
 
         video.srcObject = stream;
         sessionActive = true;
+        connectionAttempts = 0; // Reset connection attempts
 
+        // Initialize audio context
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-        await audioContext.audioWorklet.addModule('/static/audio-processor.js').catch(e => {
+        
+        // Try AudioWorklet first, fall back to ScriptProcessor
+        try {
+          await audioContext.audioWorklet.addModule('/static/audio-processor.js');
+          setupAudioWorklet();
+        } catch (e) {
           console.warn('AudioWorklet not available, falling back to ScriptProcessor:', e);
           setupScriptProcessor();
-        });
+        }
 
         connectWebSocket();
 
@@ -374,9 +400,33 @@
         summary.classList.add('hidden');
       } catch (error) {
         console.error('Error starting detection:', error);
-        status.textContent = `Error: ${error.message}`;
+        status.textContent = 'Error accessing camera/microphone. Please grant permissions and ensure HTTPS.';
         stopDetection();
       }
+    }
+
+    function setupAudioWorklet() {
+      const source = audioContext.createMediaStreamSource(stream);
+      const workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
+
+      workletNode.port.onmessage = function(event) {
+        if (!sessionActive) return;
+
+        const { type, data } = event.data;
+        if (type === 'audio_chunk' && ws && ws.readyState === WebSocket.OPEN) {
+          // Convert ArrayBuffer to base64
+          const uint8Array = new Uint8Array(data);
+          const base64Data = btoa(String.fromCharCode.apply(null, uint8Array));
+          
+          ws.send(JSON.stringify({
+            type: 'audio_chunk',
+            data: base64Data
+          }));
+        }
+      };
+
+      source.connect(workletNode);
+      workletNode.connect(audioContext.destination);
     }
 
     function setupScriptProcessor() {
@@ -395,9 +445,13 @@
         }
 
         if (ws && ws.readyState === WebSocket.OPEN) {
+          // Convert Int16Array to base64 for transmission
+          const uint8Array = new Uint8Array(buffer.buffer);
+          const base64Data = btoa(String.fromCharCode.apply(null, uint8Array));
+          
           ws.send(JSON.stringify({
             type: 'audio_chunk',
-            data: Array.from(buffer)
+            data: base64Data
           }));
         }
       };
@@ -408,27 +462,37 @@
 
     function processVideo() {
       if (!sessionActive) {
-        cancelAnimationFrame(animationFrameId);
+        if (animationFrameId) {
+          cancelAnimationFrame(animationFrameId);
+          animationFrameId = null;
+        }
         return;
       }
 
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0);
+      if (video.readyState >= 2) { // HAVE_CURRENT_DATA
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        
+        ctx.drawImage(video, 0, 0);
 
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        canvas.toBlob(blob => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            ws.send(JSON.stringify({
-              type: 'video_frame',
-              data: reader.result.split(',')[1]
-            }));
-          };
-          reader.readAsDataURL(blob);
-        }, 'image/jpeg', 0.7);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          canvas.toBlob(blob => {
+            if (blob && sessionActive) {
+              const reader = new FileReader();
+              reader.onload = () => {
+                if (ws && ws.readyState === WebSocket.OPEN && sessionActive) {
+                  ws.send(JSON.stringify({
+                    type: 'video_frame',
+                    data: reader.result.split(',')[1]
+                  }));
+                }
+              };
+              reader.readAsDataURL(blob);
+            }
+          }, 'image/jpeg', 0.7);
+        }
       }
 
       animationFrameId = requestAnimationFrame(processVideo);
@@ -436,6 +500,7 @@
 
     function stopDetection() {
       sessionActive = false;
+      connectionAttempts = 0;
 
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
@@ -461,8 +526,8 @@
       if (ws) {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'stop_session' }));
-          ws.close();
         }
+        ws.close();
         ws = null;
       }
 
@@ -474,6 +539,15 @@
     stopBtn.addEventListener('click', stopDetection);
 
     initEmotionDisplays();
+
+    // Handle page visibility changes
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && sessionActive) {
+        console.log('Page hidden, pausing detection');
+      } else if (!document.hidden && sessionActive) {
+        console.log('Page visible, resuming detection');
+      }
+    });
   </script>
 </body>
 </html>
