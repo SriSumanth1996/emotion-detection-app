@@ -18,6 +18,8 @@ import wave
 import soundfile as sf
 import librosa
 
+port = int(os.environ.get("PORT", 8000))
+
 # Suppress warnings
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
