@@ -19,7 +19,6 @@ import wave
 import soundfile as sf
 import librosa
 
-
 # Suppress warnings
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
@@ -209,51 +208,46 @@ def save_audio_chunk_as_wav(audio_data, filename):
         print(f"Error saving WAV file: {e}")
         return False
 
-
-import soundfile as sf
-import librosa
-
 def analyze_voice_emotion_from_chunks(connection_id):
-    """Analyze accumulated audio chunks using voice emotion pipeline without FFmpeg"""
+    """Analyze accumulated audio chunks with minimum length check"""
     if not voice_emotion_pipe:
         return {'success': False, 'error': 'Voice model not loaded'}
-    try:
-        audio_chunks = manager.audio_buffers[connection_id]
-        if not audio_chunks:
-            return {'success': True, 'emotions': {}, 'no_audio': True}
 
-        # Concatenate all audio chunks into one NumPy array
-        full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32) / 32768.0  # Normalize int16 to float
-        # Skip if volume is too low
-        if np.abs(full_audio).mean() < 0.01:
-            print("Audio too quiet, skipping voice analysis")
-            return {'success': True, 'emotions': {'neutral': 1.0}, 'silent': True}
+    audio_chunks = manager.audio_buffers[connection_id]
+    if len(audio_chunks) < 3:  # Require at least 3 chunks
+        return {'success': True, 'emotions': {}, 'waiting_for_more_audio': True}
 
-        # Resample if needed
-        target_sample_rate = voice_emotion_pipe.feature_extractor.sampling_rate
-        if SAMPLE_RATE != target_sample_rate:
-            full_audio = librosa.resample(full_audio, orig_sr=SAMPLE_RATE, target_sr=target_sample_rate)
+    full_audio = np.concatenate(audio_chunks, axis=0).astype(np.float32) / 32768.0
 
-        # Run inference directly with raw audio data
-        result = voice_emotion_pipe(full_audio, sampling_rate=target_sample_rate)
+    # Minimum audio length check (at least 1 second)
+    if len(full_audio) < SAMPLE_RATE:
+        return {'success': True, 'emotions': {'neutral': 1.0}, 'audio_too_short': True}
 
-        # Map results to standard emotions
-        mapped_emotions = {e: 0.0 for e in EMOTION_LABELS}
-        if result:
-            for item in result:
-                label = item['label'].lower()
-                face_label = VOICE_TO_FACE_MAP.get(label, 'neutral')
-                if face_label in mapped_emotions:
-                    mapped_emotions[face_label] += item['score']
-        else:
-            mapped_emotions['neutral'] = 1.0
+    # Skip if volume is too low
+    if np.abs(full_audio).mean() < 0.01:
+        print("Audio too quiet, skipping voice analysis")
+        return {'success': True, 'emotions': {'neutral': 1.0}, 'silent': True}
 
-        return {'success': True, 'emotions': mapped_emotions}
+    # Resample if needed
+    target_sample_rate = voice_emotion_pipe.feature_extractor.sampling_rate
+    if SAMPLE_RATE != target_sample_rate:
+        full_audio = librosa.resample(full_audio, orig_sr=SAMPLE_RATE, target_sr=target_sample_rate)
 
-    except Exception as e:
-        print(f"Voice analysis error: {e}")
-        traceback.print_exc()
-        return {'success': False, 'error': str(e)}
+    # Run inference directly with raw audio data
+    result = voice_emotion_pipe(full_audio, sampling_rate=target_sample_rate)
+
+    # Map results to standard emotions
+    mapped_emotions = {e: 0.0 for e in EMOTION_LABELS}
+    if result:
+        for item in result:
+            label = item['label'].lower()
+            face_label = VOICE_TO_FACE_MAP.get(label, 'neutral')
+            if face_label in mapped_emotions:
+                mapped_emotions[face_label] += item['score']
+    else:
+        mapped_emotions['neutral'] = 1.0
+
+    return {'success': True, 'emotions': mapped_emotions}
 
 def smooth_emotions(connection_id, new_scores):
     """Smooth emotion scores over time"""
@@ -278,114 +272,119 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
+            try:
+                data = await websocket.receive_text()
+                message = json.loads(data)
 
-            if message['type'] == 'start_session':
-                manager.start_session(connection_id)
-                await websocket.send_text(json.dumps({
-                    'type': 'session_started',
-                    'message': 'Recording started'
-                }))
-                print(f"Session started for {connection_id}")
+                if message['type'] == 'start_session':
+                    manager.start_session(connection_id)
+                    await websocket.send_text(json.dumps({
+                        'type': 'session_started',
+                        'message': 'Recording started'
+                    }))
+                    print(f"Session started for {connection_id}")
 
-            elif message['type'] == 'stop_session':
-                manager.stop_session(connection_id)
+                elif message['type'] == 'stop_session':
+                    manager.stop_session(connection_id)
 
-                # Analyze final audio chunks before stopping
-                if manager.audio_buffers[connection_id]:
-                    voice_result = analyze_voice_emotion_from_chunks(connection_id)
-                    if voice_result['success'] and voice_result.get('emotions'):
-                        emotions = voice_result['emotions']
-                        if any(score > 0 for score in emotions.values()):
-                            dominant = max(emotions, key=emotions.get)
-                            manager.emotion_counters[connection_id]['voice'][
-                                dominant] += 5  # Give final analysis more weight
-
-                # Send final summary
-                counters = manager.emotion_counters[connection_id]
-                face_total = sum(counters['face'].values())
-                voice_total = sum(counters['voice'].values())
-
-                face_percentages = {
-                    e: (count / face_total * 100) if face_total > 0 else 0
-                    for e, count in counters['face'].items()
-                }
-                voice_percentages = {
-                    e: (count / voice_total * 100) if voice_total > 0 else 0
-                    for e, count in counters['voice'].items()
-                }
-
-                await websocket.send_text(json.dumps({
-                    'type': 'final_summary',
-                    'face_emotions': face_percentages,
-                    'voice_emotions': voice_percentages
-                }))
-                print(f"Session stopped for {connection_id}")
-
-            elif message['type'] == 'video_frame' and manager.session_active.get(connection_id, False):
-                # Process video frame
-                result = analyze_face_emotion(message['data'])
-
-                if result['success'] and result.get('face_detected'):
-                    # Smooth emotions
-                    smoothed = smooth_emotions(connection_id, result['emotions'])
-
-                    # Find dominant emotion
-                    if smoothed:
-                        dominant = max(smoothed, key=smoothed.get)
-                        manager.emotion_counters[connection_id]['face'][dominant] += 1
-
-                        await websocket.send_text(json.dumps({
-                            'type': 'face_emotion',
-                            'emotions': smoothed,
-                            'dominant': dominant,
-                            'face_coords': result.get('face_coords', [])
-                        }))
-
-            elif message['type'] == 'audio_chunk' and manager.session_active.get(connection_id, False):
-                try:
-                    # Decode audio data (expecting 16-bit PCM)
-                    audio_bytes = base64.b64decode(message['data'])
-
-                    # Convert to numpy array (16-bit integers)
-                    audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-
-                    # Store chunk for later analysis
-                    manager.audio_buffers[connection_id].append(audio_array)
-
-                    print(f"Audio chunk received: {len(audio_array)} samples")
-
-                    # Analyze every few chunks (similar to Tkinter approach)
-                    if len(manager.audio_buffers[connection_id]) >= 1:  # Analyze every 3 chunks
+                    # Analyze final audio chunks before stopping
+                    if manager.audio_buffers[connection_id]:
                         voice_result = analyze_voice_emotion_from_chunks(connection_id)
-
                         if voice_result['success'] and voice_result.get('emotions'):
                             emotions = voice_result['emotions']
                             if any(score > 0 for score in emotions.values()):
                                 dominant = max(emotions, key=emotions.get)
-                                manager.emotion_counters[connection_id]['voice'][dominant] += 1
+                                manager.emotion_counters[connection_id]['voice'][dominant] += 5
 
-                                await websocket.send_text(json.dumps({
-                                    'type': 'voice_emotion',
-                                    'emotions': emotions,
-                                    'dominant': dominant
-                                }))
+                    # Send final summary
+                    counters = manager.emotion_counters[connection_id]
+                    face_total = sum(counters['face'].values())
+                    voice_total = sum(counters['voice'].values())
 
-                        # Clear processed chunks but keep the last one for continuity
-                        if len(manager.audio_buffers[connection_id]) > 1:
-                            manager.audio_buffers[connection_id] = manager.audio_buffers[connection_id][-1:]
+                    face_percentages = {
+                        e: (count / face_total * 100) if face_total > 0 else 0
+                        for e, count in counters['face'].items()
+                    }
+                    voice_percentages = {
+                        e: (count / voice_total * 100) if voice_total > 0 else 0
+                        for e, count in counters['voice'].items()
+                    }
 
-                except Exception as e:
-                    print(f"Error processing audio chunk: {e}")
-                    traceback.print_exc()
+                    await websocket.send_text(json.dumps({
+                        'type': 'final_summary',
+                        'face_emotions': face_percentages,
+                        'voice_emotions': voice_percentages
+                    }))
+                    print(f"Session stopped for {connection_id}")
+
+                elif message['type'] == 'video_frame' and manager.session_active.get(connection_id, False):
+                    # Process video frame
+                    result = analyze_face_emotion(message['data'])
+
+                    if result['success'] and result.get('face_detected'):
+                        # Smooth emotions
+                        smoothed = smooth_emotions(connection_id, result['emotions'])
+
+                        # Find dominant emotion
+                        if smoothed:
+                            dominant = max(smoothed, key=smoothed.get)
+                            manager.emotion_counters[connection_id]['face'][dominant] += 1
+
+                            await websocket.send_text(json.dumps({
+                                'type': 'face_emotion',
+                                'emotions': smoothed,
+                                'dominant': dominant,
+                                'face_coords': result.get('face_coords', [])
+                            }))
+
+                elif message['type'] == 'audio_chunk' and manager.session_active.get(connection_id, False):
+                    try:
+                        # Decode audio data (expecting 16-bit PCM)
+                        audio_bytes = base64.b64decode(message['data'])
+
+                        # Convert to numpy array (16-bit integers)
+                        audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+
+                        # Store chunk for later analysis
+                        manager.audio_buffers[connection_id].append(audio_array)
+
+                        print(f"Audio chunk received: {len(audio_array)} samples")
+
+                        # Analyze every few chunks
+                        if len(manager.audio_buffers[connection_id]) >= 1:
+                            voice_result = analyze_voice_emotion_from_chunks(connection_id)
+
+                            if voice_result['success'] and voice_result.get('emotions'):
+                                emotions = voice_result['emotions']
+                                if any(score > 0 for score in emotions.values()):
+                                    dominant = max(emotions, key=emotions.get)
+                                    manager.emotion_counters[connection_id]['voice'][dominant] += 1
+
+                                    await websocket.send_text(json.dumps({
+                                        'type': 'voice_emotion',
+                                        'emotions': emotions,
+                                        'dominant': dominant
+                                    }))
+
+                            # Clear processed chunks but keep the last one for continuity
+                            if len(manager.audio_buffers[connection_id]) > 1:
+                                manager.audio_buffers[connection_id] = manager.audio_buffers[connection_id][-1:]
+
+                    except Exception as e:
+                        print(f"Error processing audio chunk: {e}")
+                        traceback.print_exc()
+
+            except json.JSONDecodeError:
+                await websocket.send_text(json.dumps({"error": "Invalid JSON"}))
+            except Exception as e:
+                print(f"Message handling error: {e}")
+                await websocket.send_text(json.dumps({"error": str(e)}))
 
     except WebSocketDisconnect:
-        print(f"WebSocket disconnected: {connection_id}")
-        manager.disconnect(websocket)
+        print(f"Client disconnected normally: {connection_id}")
     except Exception as e:
         print(f"WebSocket error: {e}")
-        traceback.print_exc()
+    finally:
         manager.disconnect(websocket)
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
