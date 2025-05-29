@@ -217,20 +217,18 @@
     let stream = null;
     let audioContext = null;
     let scriptNode = null;
-    let sessionActive = false; // Added to track session state
-    let animationFrameId = null; // For tracking video processing
+    let sessionActive = false;
+    let animationFrameId = null;
 
     const emotions = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral'];
 
     function initEmotionDisplays() {
       emotions.forEach(emotion => {
-        // Face emotion bar
         const faceBar = document.createElement('div');
         faceBar.className = 'emotion-bar';
         faceBar.innerHTML = `<div class="emotion-bar-fill" id="face-${emotion}" style="width: 0%">${emotion}: 0%</div>`;
         faceEmotions.appendChild(faceBar);
 
-        // Voice emotion bar
         const voiceBar = document.createElement('div');
         voiceBar.className = 'emotion-bar';
         voiceBar.innerHTML = `<div class="emotion-bar-fill" id="voice-${emotion}" style="width: 0%">${emotion}: 0%</div>`;
@@ -240,7 +238,7 @@
 
     function updateEmotionDisplay(type, emotionScores) {
       let totalScore = Object.values(emotionScores).reduce((sum, val) => sum + val, 0);
-      if (totalScore <= 0) totalScore = 1; // Prevent division by zero
+      if (totalScore <= 0) totalScore = 1;
 
       emotions.forEach(emotion => {
         let score = emotionScores[emotion] || 0;
@@ -254,7 +252,6 @@
     }
 
     function connectWebSocket() {
-      // Use secure WebSocket (wss://) - make sure your server supports this
       const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
       ws = new WebSocket(`${protocol}${window.location.host}/ws`);
 
@@ -262,8 +259,8 @@
         console.log('WebSocket connected');
         if (sessionActive) {
           ws.send(JSON.stringify({ type: 'start_session' }));
-        status.textContent = 'Recording started - analyzing emotions...';
-        processVideo(); // Start video processing after connection
+          status.textContent = 'Recording started - analyzing emotions...';
+          processVideo();
         }
       };
 
@@ -282,7 +279,7 @@
               break;
             case 'final_summary':
               showFinalSummary(data);
-              stopDetection(); // Clean up after final summary
+              stopDetection();
               break;
           }
         } catch (e) {
@@ -332,23 +329,31 @@
     }
 
     async function startDetection() {
+      if (window.location.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(window.location.hostname)) {
+        status.textContent = 'Camera/mic access requires HTTPS. Please use HTTPS URL.';
+        return;
+      }
+
       try {
         status.textContent = 'Requesting camera and microphone access...';
 
-        // Get media stream
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480 },
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: 'user'
+          },
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
-            sampleRate: 16000
+            sampleRate: 16000,
+            channelCount: 1
           }
         });
 
         video.srcObject = stream;
         sessionActive = true;
 
-        // Set up Web Audio API (modern approach)
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
         await audioContext.audioWorklet.addModule('audio-processor.js').catch(e => {
           console.warn('AudioWorklet not available, falling back to ScriptProcessor:', e);
@@ -375,7 +380,7 @@
         if (!sessionActive) return;
 
         const inputBuffer = e.inputBuffer;
-        const inputData = inputBuffer.getChannelData(0); // mono
+        const inputData = inputBuffer.getChannelData(0);
         const buffer = new Int16Array(inputData.length);
 
         for (let i = 0; i < buffer.length; i++) {
@@ -385,7 +390,7 @@
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: 'audio_chunk',
-            data: Array.from(buffer) // More reliable than btoa approach
+            data: Array.from(buffer)
           }));
         }
       };
@@ -406,14 +411,13 @@
       canvas.height = video.videoHeight;
       ctx.drawImage(video, 0, 0);
 
-      // Only send if WebSocket is connected
       if (ws && ws.readyState === WebSocket.OPEN) {
         canvas.toBlob(blob => {
           const reader = new FileReader();
           reader.onload = () => {
             ws.send(JSON.stringify({
               type: 'video_frame',
-              data: reader.result.split(',')[1] // Send base64 without prefix
+              data: reader.result.split(',')[1]
             }));
           };
           reader.readAsDataURL(blob);
@@ -426,13 +430,11 @@
     function stopDetection() {
       sessionActive = false;
 
-      // Clean up video processing
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
       }
 
-      // Clean up audio
       if (scriptNode) {
         scriptNode.disconnect();
         scriptNode = null;
@@ -443,14 +445,12 @@
         audioContext = null;
       }
 
-      // Clean up media stream
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
         stream = null;
         video.srcObject = null;
       }
 
-      // Clean up WebSocket
       if (ws) {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'stop_session' }));
@@ -463,11 +463,9 @@
       stopBtn.disabled = true;
     }
 
-    // Event listeners
     startBtn.addEventListener('click', startDetection);
     stopBtn.addEventListener('click', stopDetection);
 
-    // Initialize
     initEmotionDisplays();
   </script>
 </body>
