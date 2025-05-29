@@ -19,7 +19,6 @@ import wave
 import soundfile as sf
 import librosa
 
-port = int(os.environ.get("PORT", 8000))
 
 # Suppress warnings
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
@@ -31,8 +30,8 @@ app = FastAPI()
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Get port from environment variable or default to 8000
-port = int(os.environ.get("PORT", 8000))
+# Get port from environment variable or default to 10000
+port = int(os.environ.get("PORT", 10000))
 
 # CORS middleware
 app.add_middleware(
@@ -414,5 +413,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting server on http://localhost:8000")
+    print(f"Starting server on http://localhost:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
