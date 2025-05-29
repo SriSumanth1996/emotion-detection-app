@@ -1,5 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 import cv2
 import numpy as np
@@ -26,6 +27,9 @@ os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
 app = FastAPI()
+
+# Get port from environment variable or default to 8000
+port = int(os.environ.get("PORT", 8000))
 
 # CORS middleware
 app.add_middleware(
@@ -407,6 +411,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-
     print("Starting server on http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
